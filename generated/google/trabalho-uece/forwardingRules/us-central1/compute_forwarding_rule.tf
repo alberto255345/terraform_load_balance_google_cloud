@@ -1,0 +1,15 @@
+resource "google_compute_forwarding_rule" "tfer--loadbalance-forwarding-rule" {
+  all_ports              = "false"
+  allow_global_access    = "false"
+  ip_address             = "35.209.130.19"
+  ip_protocol            = "TCP"
+  is_mirroring_collector = "false"
+  load_balancing_scheme  = "EXTERNAL_MANAGED"
+  name                   = "loadbalance-forwarding-rule"
+  network                = "${data.terraform_remote_state.networks.outputs.google_compute_network_tfer--default_self_link}"
+  network_tier           = "STANDARD"
+  port_range             = "80-80"
+  project                = "trabalho-uece"
+  region                 = "us-central1"
+  target                 = "https://www.googleapis.com/compute/v1/projects/trabalho-uece/regions/us-central1/targetHttpProxies/loadbalance-target-proxy"
+}
