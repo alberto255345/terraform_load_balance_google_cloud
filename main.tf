@@ -10,20 +10,47 @@ provider "google-beta" {
   region      = "us-central1"
 }
 
-# VPC
+# VPC in custom mode
 resource "google_compute_network" "default" {
   name                    = "l7-xlb-network"
   provider                = google-beta
   auto_create_subnetworks = false
 }
 
-# backend subnet
+# Custom subnet
 resource "google_compute_subnetwork" "default" {
   name          = "l7-xlb-subnet"
   provider      = google-beta
   ip_cidr_range = "10.0.1.0/24"
   region        = "us-central1"
   network       = google_compute_network.default.id
+}
+
+# database
+resource "google_sql_database_instance" "mysql_instance" {
+  name             = "mysql-instance"
+  database_version = "MYSQL_5_7"
+  region          = "us-central1"
+
+  settings {
+    tier = "db-f1-micro"  # Escolha a tier conforme sua necessidade
+    disk_size = 20        # Tamanho do disco em GB
+
+    ip_configuration {
+      ipv4_enabled = true
+
+      authorized_networks {
+        name  = "allow-all"
+        value = "0.0.0.0/0"  # Permitir acesso de qualquer IP
+      }
+    }
+  }
+  deletion_protection = false
+}
+
+resource "google_sql_database" "my_database" {
+  name     = "my_database"
+  instance = google_sql_database_instance.mysql_instance.name
 }
 
 # reserved IP address
@@ -81,7 +108,7 @@ resource "google_compute_instance_template" "default" {
   name         = "l7-xlb-mig-template"
   provider     = google-beta
   machine_type = "e2-small"
-  tags         = ["allow-health-check"]
+  tags         = ["allow-health-check", "ssh", "http", "mysql"]
 
   network_interface {
     network    = google_compute_network.default.id
@@ -96,28 +123,23 @@ resource "google_compute_instance_template" "default" {
     boot         = true
   }
 
-  # install nginx and serve a simple web page
+ # install nginx and serve a simple web page
   metadata = {
-    startup-script = <<-EOF1
+    startup-script = <<-EOF
       #! /bin/bash
       set -euo pipefail
 
-      export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      apt-get install -y nginx-light jq
+      apt-get install -y apache2 git
 
-      NAME=$(curl -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/hostname")
-      IP=$(curl -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip")
-      METADATA=$(curl -f -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/?recursive=True" | jq 'del(.["startup-script"])')
+      sudo rm -rf /var/www/html/*
 
-      cat <<EOF > /var/www/html/index.html
-      <pre>
-      Name: $NAME
-      IP: $IP
-      Metadata: $METADATA
-      </pre>
-      EOF
-    EOF1
+      git clone https://github.com/alberto255345/crud_php_simples.git /var/www/html
+
+      chmod +x /var/www/html/inicio.sh
+      cd /var/www/html
+      ./inicio.sh
+    EOF
   }
   lifecycle {
     create_before_destroy = true
@@ -147,7 +169,7 @@ resource "google_compute_instance_group_manager" "default" {
     name              = "primary"
   }
   base_instance_name = "vm"
-  target_size        = 2
+  target_size        = 1
 }
 
 # allow access from health check ranges
@@ -160,5 +182,48 @@ resource "google_compute_firewall" "default" {
   allow {
     protocol = "tcp"
   }
+
+  allow {
+    protocol = "icmp"
+  }
   target_tags = ["allow-health-check"]
+}
+
+resource "google_compute_firewall" "allow-ssh" {
+  name    = "allow-ssh"
+  network = google_compute_network.default.id
+  
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["ssh"]
+}
+
+resource "google_compute_firewall" "allow-http" {
+  name    = "allow-http"
+  network = google_compute_network.default.id
+  
+  allow {
+    protocol = "tcp"
+    ports    = ["80", "8080", "443"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["http"]
+}
+
+resource "google_compute_firewall" "allow-mysql" {
+  name    = "allow-mysql"
+  network = google_compute_network.default.id
+  
+  allow {
+    protocol = "tcp"
+    ports    = ["3306"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["mysql"]
 }
